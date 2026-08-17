@@ -1,0 +1,655 @@
+# ROI Object Search Pipeline
+
+A comprehensive brain imaging analysis tool for performing region of interest (ROI) object matching and search across histological sections in neural datasets.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Installation & Setup](#installation--setup)
+- [Pipeline Components](#pipeline-components)
+- [Core Functions](#core-functions)
+- [API Endpoints](#api-endpoints)
+- [Usage Examples](#usage-examples)
+- [Data Flow](#data-flow)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
+
+This system enables researchers to select a region of interest (ROI) from a brain histological section and automatically find similar objects/patterns across all available sections in single or multiple biosamples. The pipeline uses deep learning-based feature matching with XFeat neural networks and geometric transformations to identify and visualize matching regions.
+
+### Key Features
+
+- **Multi-Biosample Support**: Process multiple brain specimens simultaneously
+- **Multi-Stain Compatibility**: Works with NISSL, MYELIN, H&E, and IHC stains
+- **Real-time Progress Tracking**: Celery-based asynchronous processing with live updates
+- **Geometric Validation**: RANSAC-based affine transformation estimation
+- **Interactive Web Interface**: FastAPI-based REST API with HTML viewer
+- **Scalable Processing**: Automatic queue management based on dataset size
+
+## Architecture
+
+### System Components
+
+```
+┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
+│    Web Interface    │◄──►│    FastAPI Server    │◄──►│   Celery Workers    │
+│   (viewer.html)     │    │     (main.py)        │    │  (celery_tasks.py)  │
+└─────────────────────┘    └──────────────────────┘    └─────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
+│   Database Layer    │◄──►│  Processing Engine   │◄──►│   Image Analytics   │
+│ (MySQL: OPEN_ATLAS, │    │   (obj_matching.py)  │    │  (/mnt/analytics/)  │
+│       HBA_V2)       │    └──────────────────────┘    └─────────────────────┘
+└─────────────────────┘
+```
+
+### Technology Stack
+
+- **Backend**: FastAPI, Python 3.8+
+- **Deep Learning**: PyTorch, XFeat (Accelerated Features)
+- **Image Processing**: OpenCV, PIL, NumPy, Matplotlib
+- **Database**: MySQL (OPEN_ATLAS, HBA_V2)
+- **Task Queue**: Celery with Redis/RabbitMQ
+- **Deployment**: Docker, Docker Compose
+
+## Installation & Setup
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Access to brain imaging data volume (`/mnt/remote/analytics/`)
+- MySQL database connections (OPEN_ATLAS, HBA_V2)
+
+### Quick Start
+
+1. **Clone and Configure**:
+   ```bash
+   cd /home/projects/discovery/roi_object_search
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
+
+2. **Build and Start Services**:
+   ```bash
+   docker-compose up --build
+   ```
+
+3. **Access the Application**:
+   - API: `http://localhost:21000`
+   - Health Check: `http://localhost:21000/health`
+   - Results Viewer: `http://localhost:21000/roi/viewer/{project_id}/{hash_value}`
+
+### Docker Commands
+
+```bash
+# Start existing container
+docker-compose up
+
+# Stop containers
+docker-compose down
+
+# Enter running container for debugging
+docker exec -it roi_obj_search bash
+
+# View logs
+docker-compose logs -f
+```
+
+## Pipeline Components
+
+### 1. Database Integration (`get_sec_byproject.py`)
+
+**Purpose**: Manages project-brain relationships and metadata retrieval
+
+**Key Functions**:
+- `OpenAtlasDB.get_project_data_json()`: Retrieves project configuration and brain selections
+- `get_biosample_and_seriesset()`: Maps brain IDs to biosamples in HBA_V2 database
+
+**Database Schema**:
+- **OPEN_ATLAS**: Project management (`groups_project`, `groups_projectbrainselection`, `groups_brainidentifier`)
+- **HBA_V2**: Brain metadata (`seriesset`, `series`, `section`, `seriestype`)
+
+### 2. Image Processing (`input_bounding.py`)
+
+**Purpose**: Handles bounding box input and thumbnail cropping
+
+**Key Functions**:
+- `input_bound(bbox, biosample, stain, section)`: Crops region from thumbnail based on coordinates
+- `apply_correction(pts, rot, jp2_wid, jp2_hei)`: Applies geometric transformations for rotation
+- `get_thumbnail_path()`: Locates thumbnail images in analytics volume
+
+**Process Flow**:
+1. Convert world coordinates to thumbnail coordinates
+2. Apply rotation corrections based on metadata
+3. Extract ROI as cropped image
+4. Return PIL Image for feature extraction
+
+### 3. Object Matching Engine (`obj_matching.py`)
+
+**Purpose**: Core feature matching and cross-section search functionality
+
+**Main Entry Points**:
+- `run_object_matching()`: Multi-biosample processing with shared reference
+- `run_object_matching_old()`: Single biosample processing (legacy)
+- `run_object_matching_multistain()`: Multi-stain processing for single biosample
+
+### 4. Metadata Management (`get_metadata.py`)
+
+**Purpose**: Retrieves section metadata from HBA_V2 database
+
+**Key Functions**:
+- `get_metadata(biosample, section, stain)`: Single section metadata
+- `get_metadata_for_all(biosample, stain)`: Bulk metadata for all sections
+
+**Retrieved Metadata**:
+- Image dimensions (width, height)
+- Rotation angles for alignment
+- File paths (JP2/TIF)
+- Ontology and transformation data
+
+## Core Functions
+
+### Main Object Matching Function
+
+The `run_object_matching()` function in `obj_matching.py:510` is the primary entry point for multi-biosample ROI matching:
+
+```python
+def run_object_matching(bbox, stain, biosample, project_id, section, progress_callback=None):
+    """
+    Multi-biosample + Multi-stain ROI object matching
+    
+    Args:
+        bbox: [x1, y1, x2, y2] coordinates in world space
+        stain: Database stain name (e.g., 'NISL', 'HEOS')
+        biosample: Reference biosample ID
+        project_id: Research project identifier
+        section: Target section number
+        progress_callback: Optional progress reporting function
+    
+    Returns:
+        dict: Success status and processed combinations
+    """
+```
+
+**Process Overview**:
+1. **Reference Creation**: Generate fixed reference image from input ROI
+2. **XFeat Loading**: Initialize neural network model once for all processing
+3. **Biosample Discovery**: Query all available biosamples and stains in project
+4. **Parallel Processing**: Process each biosample-stain combination independently
+5. **Result Aggregation**: Combine outputs and generate final response
+
+### Wrap Corners and Draw Matches Function
+
+The `wrap_corners_and_draw_matches()` function in `obj_matching.py:140` handles geometric validation and visualization:
+
+```python
+def wrap_corners_and_draw_matches(ref_points, dst_points, img1, img2, conf_threshold=0.55):
+    """
+    Performs geometric validation and creates match visualization
+    
+    Args:
+        ref_points: Feature points from reference image
+        dst_points: Feature points from target image  
+        img1: Reference image
+        img2: Target image
+        conf_threshold: Confidence threshold for local consensus
+    
+    Returns:
+        tuple: (visualization_image, final_mask) or (None, None) if insufficient matches
+    """
+```
+
+**Detailed Workflow**:
+
+1. **Affine Transformation Estimation**:
+   ```python
+   M_affine, affine_inliers_mask = cv2.estimateAffine2D(
+       ref_points, dst_points, method=cv2.RANSAC, 
+       ransacReprojThreshold=3.0, maxIters=1000, confidence=0.999
+   )
+   ```
+   - Uses RANSAC algorithm for robust transformation estimation
+   - Filters outlier matches to find geometric consensus
+   - Requires minimum 6 high-confidence inlier points
+
+2. **Local Consensus Confidence**:
+   ```python
+   def local_consensus_confidence(points, radius=30):
+       tree = cKDTree(points)
+       counts = np.array([len(tree.query_ball_point(p, radius)) for p in points])
+       return counts / counts.max()  # normalize to [0, 1]
+   ```
+   - Calculates local density of feature points
+   - Higher density indicates more reliable matches
+   - Filters matches below confidence threshold (default 0.55)
+
+3. **Corner Warping and Visualization**:
+   ```python
+   # Transform reference image corners to target space
+   corners_img1 = np.array([[0, 0], [w1-1, 0], [w1-1, h1-1], [0, h1-1]], dtype=np.float32)
+   warped_corners = cv2.transform(corners_img1, M_clean)
+   
+   # Draw bounding box on target image
+   cv2.polylines(img2_with_box, [warped_corners.astype(np.int32)], True, (0, 255, 0), 4)
+   ```
+   - Projects reference image boundaries onto target image
+   - Visualizes expected object location with green bounding box
+   - Creates side-by-side match visualization with colored connecting lines
+
+4. **Match Quality Visualization**:
+   ```python
+   for p1, p2, c in zip(final_src, final_dst, final_scores):
+       color = (0, int(255 * c), int(255 * (1 - c)))  # Green for high confidence
+       thickness = int(1 + 3 * c)  # Thicker lines for better matches
+       cv2.line(img_matches, pt1, pt2, color, thickness, lineType=cv2.LINE_AA)
+   ```
+   - Color codes matches by confidence (red = low, green = high)
+   - Line thickness proportional to match quality
+   - Anti-aliased rendering for publication-quality output
+
+### Feature Matching Process
+
+The core feature matching uses XFeat (eXtremely Fast Feature detector):
+
+```python
+# Load XFeat model (once per processing session)
+xfeat = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained=True, top_k=4096).cuda()
+
+# Extract and match features between images
+mkpts_0, mkpts_1 = xfeat.match_xfeat(reference_image, target_image, top_k=4096)
+```
+
+**XFeat Advantages**:
+- GPU-accelerated feature detection and description
+- Robust to rotation, scale, and illumination changes
+- Optimized for histological image patterns
+- Up to 4096 feature points per image for detailed matching
+
+## API Endpoints
+
+### Core Processing Endpoints
+
+#### POST `/match-objects-async`
+Intelligent queue management for object matching:
+
+```json
+{
+  "bbox": [25606.41, -66500.21, 50830.62, -58397.89],
+  "stain": "NISL",
+  "biosample": 222,
+  "project_id": 137,
+  "section": 1291,
+  "description": "Hippocampus CA1 region analysis"
+}
+```
+
+**Response**:
+```json
+{
+  "task_id": "abc123def456",
+  "message": "Large biosample detected (45 sections). Processing asynchronously.",
+  "section_count": 45,
+  "processing_mode": "async",
+  "project_id": 137,
+  "estimated_time": "~3 minutes",
+  "hash_value": "a1b2c3d4",
+  "celery_task_id": "celery-uuid-here"
+}
+```
+
+#### GET `/progress/{task_id}`
+Real-time progress tracking with section-level granularity:
+
+```json
+{
+  "completed_sections": 23,
+  "total_sections": 45,
+  "remaining_sections": 22,
+  "status": "Processing section 1297 (23/45)",
+  "error": null
+}
+```
+
+#### GET `/results/{project_id}/{hash_value}`
+Retrieve processed results in tree structure:
+
+```json
+{
+  "project_id": 137,
+  "hash_value": "a1b2c3d4",
+  "total_biosamples": 3,
+  "results": {
+    "222": {
+      "NISL": [
+        {
+          "section": "1291",
+          "image_url": "http://localhost:21000/137/a1b2c3d4/222/NISL/1291.png",
+          "filename": "1291.png"
+        }
+      ]
+    }
+  }
+}
+```
+
+### Management Endpoints
+
+#### GET `/task-history`
+Track processing history with optional filtering:
+- `project_id`: Filter by project
+- `limit`: Maximum results (default: 50)
+- `with_description_only`: Only tasks with descriptions (default: true)
+
+#### GET `/active-tasks`
+Monitor currently running tasks with progress tracking
+
+#### DELETE `/task-history/{task_id}`
+Remove completed or failed tasks from history
+
+#### GET `/project/{project_id}/section-count`
+Get total sections and biosample breakdown for project planning
+
+## Usage Examples
+
+### 1. Basic ROI Search
+
+```python
+import requests
+
+# Define ROI coordinates (world space)
+bbox = [25606.41, -66500.21, 50830.62, -58397.89]
+
+# Submit processing request
+response = requests.post("http://localhost:21000/match-objects-async", json={
+    "bbox": bbox,
+    "stain": "NISL", 
+    "biosample": 222,
+    "project_id": 137,
+    "section": 1291,
+    "description": "Cortical layer analysis"
+})
+
+task_info = response.json()
+print(f"Task ID: {task_info['task_id']}")
+print(f"Processing mode: {task_info['processing_mode']}")
+```
+
+### 2. Progress Monitoring
+
+```python
+import time
+
+task_id = "abc123def456"
+
+while True:
+    progress = requests.get(f"http://localhost:21000/progress/{task_id}").json()
+    
+    if progress["remaining_sections"] == 0:
+        print("Processing complete!")
+        break
+        
+    print(f"Progress: {progress['completed_sections']}/{progress['total_sections']}")
+    print(f"Status: {progress['status']}")
+    time.sleep(5)
+```
+
+### 3. Results Retrieval
+
+```python
+# Get result tree structure
+results = requests.get(f"http://localhost:21000/results/{project_id}/{hash_value}").json()
+
+# Download specific result image
+for biosample, stains in results["results"].items():
+    for stain, sections in stains.items():
+        for section in sections:
+            image_url = section["image_url"]
+            # Download and process image
+```
+
+## Data Flow
+
+### Complete Processing Pipeline
+
+```mermaid
+graph TD
+    A[User Selects ROI] --> B[Extract Bounding Box Coordinates]
+    B --> C[Query Project Configuration]
+    C --> D[Create Reference Image from ROI]
+    D --> E[Load XFeat Neural Network]
+    E --> F[Get All Available Biosamples]
+    F --> G[Process Each Biosample-Stain Combination]
+    
+    G --> H[Load Target Section Thumbnails]
+    H --> I[Extract Features with XFeat]
+    I --> J[Match Features Between Reference and Target]
+    J --> K[Apply RANSAC Geometric Validation]
+    K --> L[Calculate Local Consensus Confidence]
+    L --> M[Filter High-Confidence Matches]
+    M --> N[Warp ROI Corners to Target Space]
+    N --> O[Generate Match Visualization]
+    O --> P[Save Results to Output Directory]
+    
+    P --> Q[Update Progress Tracking]
+    Q --> R{More Sections?}
+    R -->|Yes| H
+    R -->|No| S[Complete Biosample Processing]
+    
+    S --> T{More Biosamples?}
+    T -->|Yes| G
+    T -->|No| U[Return Final Results]
+```
+
+### Directory Structure
+
+```
+/apps/volumes/results/{project_id}/{hash_value}/
+├── {biosample_1}/
+│   ├── NISL/
+│   │   ├── 1291.png
+│   │   ├── 1292.png
+│   │   └── ...
+│   ├── MYEL/
+│   │   ├── 1291.png
+│   │   └── ...
+│   └── HEOS/
+├── {biosample_2}/
+│   └── ...
+└── {biosample_n}/
+```
+
+### Hash Generation
+
+Each ROI search generates a unique hash based on bounding box coordinates:
+```python
+hash_box = str(bbox)
+hash_value = hashlib.md5(hash_box.encode("utf-8")).hexdigest()
+```
+
+This enables:
+- Result caching and reuse
+- Organized file structure
+- Unique URL generation
+- Progress tracking across sessions
+
+## Configuration
+
+### Environment Variables
+
+Create `.env` file with required configuration:
+
+```env
+# Database Configuration
+MYSQL_HOST=apollo2.humanbrain.in
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your_password
+
+OPENATLAS_HOST=172.20.23.98
+OPENATLAS_PORT=3307
+
+# Storage Paths
+ANALYTICS_VOLUME=/mnt/remote/analytics
+RESULTS_DIR=/apps/volumes/results
+
+# Processing Configuration  
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+
+# Application Settings
+API_PORT=21000
+DEBUG_MODE=false
+```
+
+### Docker Configuration
+
+The `docker-compose.yml` defines the complete service stack:
+
+```yaml
+services:
+  roi_obj_search:
+    build: .
+    ports:
+      - "21000:8000"
+    volumes:
+      - /mnt/remote/analytics:/apps/analytics:ro
+      - ./volumes:/apps/volumes
+    environment:
+      - RESULTS_DIR=/apps/volumes/results
+  
+  celery_worker:
+    build: .
+    command: celery -A src.celery_config worker --loglevel=info
+    volumes:
+      - /mnt/remote/analytics:/apps/analytics:ro
+      - ./volumes:/apps/volumes
+  
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+```
+
+### Processing Thresholds
+
+Key parameters for fine-tuning:
+
+```python
+# Automatic queue management
+SYNC_THRESHOLD = 10  # sections, sync vs async processing
+CONFIDENCE_THRESHOLD = 0.55  # local consensus confidence  
+MIN_INLIERS = 6  # minimum high-confidence matches
+RANSAC_THRESHOLD = 3.0  # geometric validation tolerance
+LOCAL_CONSENSUS_RADIUS = 30  # pixels for local density calculation
+```
+
+## Troubleshooting
+
+### Common Issues
+
+#### 1. XFeat Model Loading Failures
+```
+Error: CUDA out of memory / Model download failed
+```
+**Solutions**:
+- Ensure CUDA-compatible GPU available
+- Check internet connection for model download
+- Reduce `top_k` parameter in `xfeat.match_xfeat()`
+
+#### 2. Database Connection Errors
+```
+Error: (2003, "Can't connect to MySQL server")
+```
+**Solutions**:
+- Verify database credentials in configuration
+- Check network connectivity to database servers
+- Ensure MySQL services are running
+
+#### 3. Missing Analytics Data
+```
+Error: No thumbnail found for biosample X, section Y
+```
+**Solutions**:
+- Verify `/mnt/remote/analytics/` mount point
+- Check analytics volume permissions
+- Validate biosample and section numbers exist
+
+#### 4. Celery Worker Issues
+```
+Error: No worker nodes available / Task stuck in PENDING
+```
+**Solutions**:
+- Restart Celery workers: `docker-compose restart celery_worker`
+- Check Redis connectivity
+- Monitor worker logs: `docker-compose logs celery_worker`
+
+### Performance Optimization
+
+#### Memory Management
+- XFeat model requires ~2GB GPU memory
+- Process large projects in smaller batches
+- Monitor Docker memory limits
+
+#### Processing Speed
+- GPU acceleration provides 10-50x speedup over CPU
+- Parallel processing across multiple biosamples
+- Disk I/O optimization with SSD storage
+
+#### Network Considerations
+- Database queries optimized with connection pooling
+- Results served through efficient file streaming
+- Progress updates use lightweight JSON responses
+
+### Debugging Tools
+
+#### Container Inspection
+```bash
+# Enter running container
+docker exec -it roi_obj_search bash
+
+# Check environment variables
+env | grep -E "(MYSQL|RESULTS|ANALYTICS)"
+
+# Verify file system access
+ls -la /apps/analytics/
+ls -la /apps/volumes/results/
+```
+
+#### API Testing
+```bash
+# Health check
+curl http://localhost:21000/health
+
+# Project section count
+curl http://localhost:21000/project/137/section-count
+
+# Active tasks
+curl http://localhost:21000/active-tasks
+```
+
+#### Log Analysis
+```bash
+# Application logs
+docker-compose logs -f roi_obj_search
+
+# Celery worker logs
+docker-compose logs -f celery_worker
+
+# Redis logs
+docker-compose logs -f redis
+```
+
+---
+
+## Support and Documentation
+
+For additional support:
+- Check application logs for detailed error messages
+- Verify all dependencies and configurations
+- Test with smaller datasets to isolate issues
+- Review the source code comments for implementation details
+
+This README provides comprehensive documentation for the ROI Object Search pipeline. The system is designed for robustness and scalability in analyzing large-scale brain imaging datasets.

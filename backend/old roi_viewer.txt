@@ -1,0 +1,634 @@
+// RoiViewer.js - Embedded ROI Results Viewer Component
+// Location: plugins/roi-plugin/roi-viewer/RoiViewer.js
+
+import { Plugin } from '../../core/Plugin.js';
+import { eventBus } from '../../core/EventBus.js';
+
+export class RoiViewer extends Plugin {
+    constructor(app, options = {}) {
+        super(app, options);
+        this.isVisible = false;
+        this.resultsData = null;
+        this.expandedBiosamples = new Set();
+        this.expandedStains = new Set();
+        this.selectedImage = null;
+        this.allSections = [];
+        this.currentSectionIndex = -1;
+    }
+
+    render() {
+        const el = document.createElement('div');
+        el.className = 'roi-viewer-modal';
+        el.id = 'roiViewer';
+        el.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 10000;
+            display: none;
+            justify-content: center;
+            align-items: center;
+        `;
+
+        el.innerHTML = `
+            <div class="roi-viewer-container" style="
+                background: white;
+                width: 95vw;
+                height: 95vh;
+                border-radius: 8px;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+                box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            ">
+                <!-- Header -->
+                <div class="roi-viewer-header" style="
+                    padding: 16px 24px;
+                    border-bottom: 1px solid #e5e7eb;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    background: #f9fafb;
+                ">
+                    <div class="roi-viewer-title">
+                        <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: #111827;">ROI Object Search Results</h2>
+                        <p id="roiViewerSubtitle" style="margin: 4px 0 0 0; font-size: 14px; color: #6b7280;"></p>
+                    </div>
+                    <button id="roiViewerClose" class="roi-viewer-close" style="
+                        background: #dc2626;
+                        color: white;
+                        border: none;
+                        padding: 8px 12px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 14px;
+                        font-weight: 500;
+                        transition: background-color 0.2s;
+                    ">
+                        Close ✕
+                    </button>
+                </div>
+
+                <!-- Content -->
+                <div class="roi-viewer-content" style="
+                    flex: 1;
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 16px;
+                    padding: 16px;
+                    overflow: hidden;
+                ">
+                    <!-- Tree View -->
+                    <div class="roi-tree-panel" style="
+                        background: #f9fafb;
+                        border-radius: 8px;
+                        padding: 16px;
+                        overflow: hidden;
+                        display: flex;
+                        flex-direction: column;
+                    ">
+                        <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #111827;">Results Tree</h3>
+                        <p style="margin: 0 0 16px 0; font-size: 12px; color: #6b7280;">Click to expand and view images</p>
+                        <div id="roiTreeContent" class="roi-tree-content" style="
+                            flex: 1;
+                            overflow-y: auto;
+                            scrollbar-width: thin;
+                        "></div>
+                    </div>
+
+                    <!-- Image Viewer -->
+                    <div class="roi-image-panel" style="
+                        background: #f9fafb;
+                        border-radius: 8px;
+                        padding: 16px;
+                        overflow: hidden;
+                        display: flex;
+                        flex-direction: column;
+                    ">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <div>
+                                <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #111827;">Image Viewer</h3>
+                                <p id="roiImageSubtitle" style="margin: 4px 0 0 0; font-size: 12px; color: #6b7280;"></p>
+                            </div>
+                            <div id="roiImageNavigation" style="display: none; align-items: center; gap: 8px;">
+                                <button id="roiPrevBtn" style="
+                                    background: #3b82f6;
+                                    color: white;
+                                    border: none;
+                                    padding: 8px;
+                                    border-radius: 6px;
+                                    cursor: pointer;
+                                    font-size: 14px;
+                                ">←</button>
+                                <span id="roiImageCounter" style="font-size: 12px; color: #6b7280;"></span>
+                                <button id="roiNextBtn" style="
+                                    background: #3b82f6;
+                                    color: white;
+                                    border: none;
+                                    padding: 8px;
+                                    border-radius: 6px;
+                                    cursor: pointer;
+                                    font-size: 14px;
+                                ">→</button>
+                            </div>
+                        </div>
+                        <div id="roiImageContent" class="roi-image-content" style="
+                            flex: 1;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            background: #e5e7eb;
+                            border-radius: 6px;
+                            overflow: hidden;
+                        ">
+                            <div style="text-align: center; color: #6b7280;">
+                                <div style="font-size: 48px; margin-bottom: 8px;">🖼️</div>
+                                <p style="margin: 0; font-size: 14px; font-weight: 500;">No image selected</p>
+                                <p style="margin: 4px 0 0 0; font-size: 12px;">Click on a section in the tree view to display the image</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        return el;
+    }
+
+    mount() {
+        // Mount to body for modal overlay
+        this.element = this.render();
+        document.body.appendChild(this.element);
+        this.bindEvents();
+        console.log('RoiViewer: Mounted');
+    }
+
+    bindEvents() {
+        // Close button
+        this.$('#roiViewerClose')?.addEventListener('click', () => {
+            this.hide();
+        });
+
+        // Close on background click
+        this.element?.addEventListener('click', (e) => {
+            if (e.target === this.element) {
+                this.hide();
+            }
+        });
+
+        // Navigation buttons
+        this.$('#roiPrevBtn')?.addEventListener('click', () => {
+            this.navigateToPrevious();
+        });
+
+        this.$('#roiNextBtn')?.addEventListener('click', () => {
+            this.navigateToNext();
+        });
+
+        // Listen for viewer requests
+        eventBus.on('roi:openViewer', (data) => {
+            this.showResults(data);
+        });
+
+        // ESC key to close
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.isVisible) {
+                this.hide();
+            }
+        });
+    }
+
+    show() {
+        this.isVisible = true;
+        this.element.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+
+    hide() {
+        this.isVisible = false;
+        this.element.style.display = 'none';
+        document.body.style.overflow = 'auto';
+        this.selectedImage = null;
+        this.allSections = [];
+        this.currentSectionIndex = -1;
+    }
+
+    async showResults(data) {
+        let resultsData;
+        
+        if (data.project_id && data.hash_value) {
+            // Fetch results from API
+            try {
+                const response = await fetch(`http://172.20.23.236:21000/results/${data.project_id}/${data.hash_value}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                resultsData = await response.json();
+            } catch (error) {
+                console.error('RoiViewer: Failed to fetch results:', error);
+                this.showError('Failed to fetch results: ' + error.message);
+                return;
+            }
+        } else {
+            // Use provided data directly
+            resultsData = data;
+        }
+
+        this.resultsData = resultsData;
+        this.expandedBiosamples.clear();
+        this.expandedStains.clear();
+        this.selectedImage = null;
+        this.allSections = [];
+        this.currentSectionIndex = -1;
+
+        // Update header
+        const subtitle = this.$('#roiViewerSubtitle');
+        if (subtitle) {
+            subtitle.textContent = `Project ID: ${resultsData.project_id} | Hash: ${resultsData.hash_value?.slice(0, 8)}...`;
+        }
+
+        // Flatten all sections for navigation
+        if (resultsData.results) {
+            Object.entries(resultsData.results).forEach(([biosample, stains]) => {
+                Object.entries(stains).forEach(([stain, images]) => {
+                    images.forEach(image => {
+                        this.allSections.push({...image, biosample, stain});
+                    });
+                });
+            });
+        }
+
+        this.renderTreeView();
+        this.show();
+    }
+
+    showError(message) {
+        this.show();
+        const treeContent = this.$('#roiTreeContent');
+        if (treeContent) {
+            treeContent.innerHTML = `
+                <div style="text-align: center; padding: 32px; color: #dc2626;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                    <h3 style="margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">Error Loading Results</h3>
+                    <p style="margin: 0; font-size: 14px;">${message}</p>
+                </div>
+            `;
+        }
+    }
+
+    renderTreeView() {
+        const treeContent = this.$('#roiTreeContent');
+        if (!treeContent || !this.resultsData?.results) return;
+
+        treeContent.innerHTML = '';
+
+        Object.entries(this.resultsData.results).forEach(([biosample, stains]) => {
+            const isExpanded = this.expandedBiosamples.has(biosample);
+            const totalImages = Object.values(stains).reduce((total, images) => total + images.length, 0);
+            
+            const biosampleDiv = document.createElement('div');
+            biosampleDiv.style.cssText = 'border: 1px solid #d1d5db; border-radius: 6px; padding: 12px; margin-bottom: 12px; background: white;';
+            
+            // Biosample header
+            const biosampleHeader = document.createElement('div');
+            biosampleHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px; background: #f3f4f6; border-radius: 4px; transition: background-color 0.2s;';
+            biosampleHeader.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="font-size: 18px;">${isExpanded ? '📂' : '📁'}</div>
+                    <div>
+                        <h4 style="margin: 0; font-size: 16px; font-weight: 600; color: #111827;">Biosample ${biosample}</h4>
+                        <span style="font-size: 12px; color: #6b7280;">
+                            ${Object.keys(stains).length} stain${Object.keys(stains).length !== 1 ? 's' : ''}, ${totalImages} image${totalImages !== 1 ? 's' : ''}
+                        </span>
+                    </div>
+                </div>
+                <button style="
+                    background: #3b82f6;
+                    color: white;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    cursor: pointer;
+                ">${isExpanded ? 'Collapse' : 'Expand'}</button>
+            `;
+            
+            biosampleHeader.addEventListener('click', () => {
+                this.toggleBiosampleExpansion(biosample);
+            });
+
+            biosampleDiv.appendChild(biosampleHeader);
+            
+            // Stains container
+            if (isExpanded) {
+                const stainsContainer = document.createElement('div');
+                stainsContainer.style.cssText = 'margin-top: 12px; padding-left: 24px;';
+                
+                Object.entries(stains).forEach(([stain, images]) => {
+                    const stainKey = `${biosample}:${stain}`;
+                    const isStainExpanded = this.expandedStains.has(stainKey);
+                    
+                    const stainDiv = document.createElement('div');
+                    stainDiv.style.cssText = 'border: 1px solid #d1d5db; border-radius: 4px; padding: 8px; margin-bottom: 8px; background: #f9fafb;';
+                    
+                    // Stain header
+                    const stainHeader = document.createElement('div');
+                    stainHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 4px;';
+                    stainHeader.innerHTML = `
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="font-size: 14px;">${isStainExpanded ? '🔬' : '🧪'}</div>
+                            <div>
+                                <h5 style="margin: 0; font-size: 14px; font-weight: 500; color: #111827;">${stain} Stain</h5>
+                                <span style="font-size: 11px; color: #6b7280;">
+                                    ${images.length} section${images.length !== 1 ? 's' : ''}
+                                </span>
+                            </div>
+                        </div>
+                        <button style="
+                            background: #3b82f6;
+                            color: white;
+                            border: none;
+                            padding: 3px 6px;
+                            border-radius: 3px;
+                            font-size: 11px;
+                            cursor: pointer;
+                        ">${isStainExpanded ? 'Hide' : 'Show'} Sections</button>
+                    `;
+                    
+                    stainHeader.addEventListener('click', () => {
+                        this.toggleStainExpansion(biosample, stain);
+                    });
+                    
+                    stainDiv.appendChild(stainHeader);
+                    
+                    // Images grid with lazy loading
+                    if (isStainExpanded) {
+                        const imagesGrid = document.createElement('div');
+                        imagesGrid.style.cssText = 'display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 8px; padding-left: 16px; max-height: 400px; overflow-y: auto; scrollbar-width: thin;';
+                        
+                        images.forEach((image, index) => {
+                            const imageContainer = document.createElement('div');
+                            imageContainer.style.cssText = `
+                                border: 2px solid ${this.selectedImage?.section === image.section ? '#3b82f6' : '#d1d5db'};
+                                border-radius: 4px;
+                                padding: 3px;
+                                background: white;
+                                cursor: pointer;
+                                transition: all 0.2s;
+                                text-align: center;
+                                min-height: 130px;
+                            `;
+                            
+                            // Create lazy loading placeholder
+                            imageContainer.innerHTML = `
+                                <div class="image-placeholder" style="
+                                    width: 100%;
+                                    height: 110px;
+                                    background: #f3f4f6;
+                                    border-radius: 3px;
+                                    display: flex;
+                                    align-items: center;
+                                    justify-content: center;
+                                    color: #9ca3af;
+                                    font-size: 10px;
+                                ">
+                                    Loading...
+                                </div>
+                                <div style="font-size: 9px; margin-top: 2px; color: #374151; font-weight: 500;">
+                                    ${image.section}
+                                </div>
+                            `;
+                            
+                            // Lazy load image when container comes into view
+                            const observer = new IntersectionObserver((entries) => {
+                                entries.forEach(entry => {
+                                    if (entry.isIntersecting) {
+                                        this.loadThumbnail(imageContainer, image);
+                                        observer.unobserve(imageContainer);
+                                    }
+                                });
+                            }, {
+                                threshold: 0.1,
+                                rootMargin: '50px'
+                            });
+                            
+                            observer.observe(imageContainer);
+                            
+                            imageContainer.addEventListener('click', () => {
+                                this.selectImage(image, biosample, stain);
+                            });
+                            
+                            // Hover effects
+                            imageContainer.addEventListener('mouseenter', () => {
+                                if (this.selectedImage?.section !== image.section) {
+                                    imageContainer.style.borderColor = '#6b7280';
+                                    imageContainer.style.transform = 'scale(1.05)';
+                                    imageContainer.style.boxShadow = '0 2px 4px rgba(0,0,0,0.15)';
+                                }
+                            });
+                            
+                            imageContainer.addEventListener('mouseleave', () => {
+                                if (this.selectedImage?.section !== image.section) {
+                                    imageContainer.style.borderColor = '#d1d5db';
+                                    imageContainer.style.transform = 'scale(1)';
+                                    imageContainer.style.boxShadow = 'none';
+                                }
+                            });
+                            
+                            imagesGrid.appendChild(imageContainer);
+                        });
+                        
+                        stainDiv.appendChild(imagesGrid);
+                    }
+                    
+                    stainsContainer.appendChild(stainDiv);
+                });
+                
+                biosampleDiv.appendChild(stainsContainer);
+            }
+            
+            treeContent.appendChild(biosampleDiv);
+        });
+    }
+
+    toggleBiosampleExpansion(biosample) {
+        if (this.expandedBiosamples.has(biosample)) {
+            this.expandedBiosamples.delete(biosample);
+        } else {
+            this.expandedBiosamples.add(biosample);
+        }
+        this.renderTreeView();
+    }
+
+    toggleStainExpansion(biosample, stain) {
+        const stainKey = `${biosample}:${stain}`;
+        if (this.expandedStains.has(stainKey)) {
+            this.expandedStains.delete(stainKey);
+        } else {
+            this.expandedStains.add(stainKey);
+        }
+        this.renderTreeView();
+    }
+
+    loadThumbnail(container, image) {
+        const placeholder = container.querySelector('.image-placeholder');
+        if (!placeholder) return;
+
+        const img = document.createElement('img');
+        img.style.cssText = `
+            width: 100%;
+            height: 110px;
+            object-fit: contain;
+            border-radius: 3px;
+            display: block;
+            background: #f9f9f9;
+        `;
+        
+        img.onload = () => {
+            placeholder.replaceWith(img);
+        };
+        
+        img.onerror = () => {
+            placeholder.innerHTML = 'No Image';
+            placeholder.style.color = '#dc2626';
+        };
+        
+        img.src = image.image_url;
+        img.alt = `Section ${image.section}`;
+    }
+
+    selectImage(image, biosample, stain) {
+        this.selectedImage = { ...image, biosample, stain };
+        this.currentSectionIndex = this.allSections.findIndex(section => section.section === image.section);
+        this.renderTreeView();
+        this.renderImageView();
+    }
+
+    renderImageView() {
+        const imageContent = this.$('#roiImageContent');
+        const imageSubtitle = this.$('#roiImageSubtitle');
+        const navigation = this.$('#roiImageNavigation');
+        const counter = this.$('#roiImageCounter');
+        const prevBtn = this.$('#roiPrevBtn');
+        const nextBtn = this.$('#roiNextBtn');
+
+        if (!this.selectedImage) {
+            if (imageContent) {
+                imageContent.innerHTML = `
+                    <div style="text-align: center; color: #6b7280;">
+                        <div style="font-size: 48px; margin-bottom: 8px;">🖼️</div>
+                        <p style="margin: 0; font-size: 14px; font-weight: 500;">No image selected</p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px;">Click on a section in the tree view to display the image</p>
+                    </div>
+                `;
+            }
+            if (navigation) navigation.style.display = 'none';
+            if (imageSubtitle) imageSubtitle.textContent = '';
+            return;
+        }
+
+        // Update subtitle and navigation
+        if (imageSubtitle) {
+            imageSubtitle.textContent = `Section ${this.selectedImage.section} - ${this.selectedImage.filename}`;
+        }
+
+        if (navigation && this.allSections.length > 1) {
+            navigation.style.display = 'flex';
+            if (counter) {
+                counter.textContent = `${this.currentSectionIndex + 1} / ${this.allSections.length}`;
+            }
+            if (prevBtn) {
+                prevBtn.disabled = this.currentSectionIndex <= 0;
+                prevBtn.style.opacity = this.currentSectionIndex <= 0 ? '0.5' : '1';
+            }
+            if (nextBtn) {
+                nextBtn.disabled = this.currentSectionIndex >= this.allSections.length - 1;
+                nextBtn.style.opacity = this.currentSectionIndex >= this.allSections.length - 1 ? '0.5' : '1';
+            }
+        } else {
+            if (navigation) navigation.style.display = 'none';
+        }
+
+        // Render image
+        if (imageContent) {
+            imageContent.innerHTML = `
+                <div style="width: 100%; height: 100%; display: flex; flex-direction: column;">
+                    <div style="flex: 1; background: #f3f4f6; border-radius: 6px; padding: 16px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
+                        <img src="${this.selectedImage.image_url}"
+                             alt="Section ${this.selectedImage.section}"
+                             style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px;"
+                             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div style="display: none; text-align: center; color: #dc2626;">
+                            <div style="font-size: 32px; margin-bottom: 8px;">⚠️</div>
+                            <p style="margin: 0; font-size: 14px;">Image failed to load</p>
+                        </div>
+                    </div>
+                    <div style="background: #f3f4f6; border-radius: 6px; padding: 12px;">
+                        <h4 style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #111827;">Image Details</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px;">
+                            <div>
+                                <span style="color: #6b7280;">Section:</span>
+                                <span style="margin-left: 8px; font-weight: 500; color: #111827;">${this.selectedImage.section}</span>
+                            </div>
+                            <div>
+                                <span style="color: #6b7280;">Biosample:</span>
+                                <span style="margin-left: 8px; font-weight: 500; color: #111827;">${this.selectedImage.biosample}</span>
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <span style="color: #6b7280; font-size: 12px;">Filename:</span>
+                            <span style="margin-left: 8px; font-weight: 500; color: #111827; font-size: 12px;">${this.selectedImage.filename}</span>
+                        </div>
+                        <div style="margin-top: 12px;">
+                            <a href="${this.selectedImage.image_url}" target="_blank" rel="noopener noreferrer"
+                               style="
+                                   display: inline-flex;
+                                   align-items: center;
+                                   gap: 6px;
+                                   color: #3b82f6;
+                                   text-decoration: none;
+                                   font-size: 12px;
+                                   padding: 4px 8px;
+                                   border: 1px solid #3b82f6;
+                                   border-radius: 4px;
+                                   transition: all 0.2s;
+                               "
+                               onmouseover="this.style.background='#3b82f6'; this.style.color='white';"
+                               onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
+                                <span>🔗</span>
+                                <span>Open in new tab</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    navigateToPrevious() {
+        if (this.currentSectionIndex > 0) {
+            const prevSection = this.allSections[this.currentSectionIndex - 1];
+            this.selectImage(prevSection, prevSection.biosample, prevSection.stain);
+        }
+    }
+
+    navigateToNext() {
+        if (this.currentSectionIndex < this.allSections.length - 1) {
+            const nextSection = this.allSections[this.currentSectionIndex + 1];
+            this.selectImage(nextSection, nextSection.biosample, nextSection.stain);
+        }
+    }
+
+    unmount() {
+        if (this.element && this.element.parentNode) {
+            this.element.parentNode.removeChild(this.element);
+        }
+        this.element = null;
+        super.unmount();
+    }
+}
+
+export default RoiViewer;

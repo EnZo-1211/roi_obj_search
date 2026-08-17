@@ -2,7 +2,9 @@
 
 Welcome to the **ROI Object Search Pipeline** workspace! This application provides a comprehensive suite of tools for region-of-interest (ROI) object matching and search across multiple histological sections in large-scale neural datasets. 
 
-**🎥 Live Demo**: Check out a demonstration of the application in action [here](https://drive.google.com/file/d/1Invs1065Vk4wJQrkqrkPKkS-3BB4N80B/view?usp=drive_link).
+## 🎥 Live Demo
+
+Check out a demonstration of the application in action [here](https://drive.google.com/file/d/1Invs1065Vk4wJQrkqrkPKkS-3BB4N80B/view?usp=drive_link).
 
 This repository has been organized into a unified workspace containing both the frontend plugin and the FastAPI backend, complete with Celery-based asynchronous processing.
 

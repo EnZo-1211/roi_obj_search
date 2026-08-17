@@ -6,6 +6,12 @@ Welcome to the **ROI Object Search Pipeline** workspace! This application provid
 
 This repository has been organized into a unified workspace containing both the frontend plugin and the FastAPI backend, complete with Celery-based asynchronous processing.
 
+## 📊 Algorithm Results & Progress Mapping
+
+Below are the results of the ROI Object Matching algorithm applied to a single area across different stages of fetal brain development. The bounding boxes demonstrate the pipeline's ability to consistently track and map the same structural region across varying biological states and sections.
+
+![Mapping Progress Progression Grid](assets/obj_matching/progression.png)
+
 ## 📁 Workspace Structure
 
 ```
@@ -65,8 +71,3 @@ final/
 
 > **Note**: For detailed configuration regarding the database environment variables, Docker setup, and the underlying XFeat implementation, please refer to the `backend/README_roi_plugin` file.
 
-## 📊 Algorithm Results & Progress Mapping
-
-Below are the results of the ROI Object Matching algorithm applied to a single area across different stages of fetal brain development. The bounding boxes demonstrate the pipeline's ability to consistently track and map the same structural region across varying biological states and sections.
-
-![Mapping Progress Progression Grid](assets/obj_matching/progression.png)

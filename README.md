@@ -2,6 +2,8 @@
 
 Welcome to the **ROI Object Search Pipeline** workspace! This application provides a comprehensive suite of tools for region-of-interest (ROI) object matching and search across multiple histological sections in large-scale neural datasets. 
 
+**🎥 Live Demo**: Check out a demonstration of the application in action [here](https://drive.google.com/file/d/1Invs1065Vk4wJQrkqrkPKkS-3BB4N80B/view?usp=drive_link).
+
 This repository has been organized into a unified workspace containing both the frontend plugin and the FastAPI backend, complete with Celery-based asynchronous processing.
 
 ## 📁 Workspace Structure
@@ -62,3 +64,9 @@ final/
 4. Load the `frontend/` components into your primary viewer application to interact with the API.
 
 > **Note**: For detailed configuration regarding the database environment variables, Docker setup, and the underlying XFeat implementation, please refer to the `backend/README_roi_plugin` file.
+
+## 📊 Algorithm Results & Progress Mapping
+
+Below are the results of the ROI Object Matching algorithm applied to a single area across different stages of fetal brain development. The bounding boxes demonstrate the pipeline's ability to consistently track and map the same structural region across varying biological states and sections.
+
+![Mapping Progress Progression Grid](assets/obj_matching/progression.png)
